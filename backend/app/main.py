@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import accounts, audit, auth, bot, dashboard, grids, logs, market, trades, users, ws
+from app.api import accounts, audit, auth, bot, dashboard, grids, logs, market, telegram_auth, trades, users, ws
 from app.config import get_settings
 from app.core.error_middleware import ErrorLoggingMiddleware
 from app.core.logging import configure_logging, get_logger
@@ -76,4 +76,5 @@ app.include_router(audit.router, prefix="/api/audit", tags=["audit"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 app.include_router(trades.router, prefix="/api/trades", tags=["trades"])
 app.include_router(market.router)
+app.include_router(telegram_auth.router, prefix="/api/tg-auth", tags=["telegram"])
 app.include_router(ws.router, prefix="/ws", tags=["ws"])

@@ -48,7 +48,9 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       ENVIRONMENT: ${ENVIRONMENT:-development}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:5174}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_WEBAPP_URL: ${TELEGRAM_WEBAPP_URL:-http://localhost:5174}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
@@ -96,6 +98,40 @@ services:
     environment:
       VITE_API_URL: ${VITE_API_URL:-}
     command: npm run dev -- --host 0.0.0.0
+
+  tg-bot:
+    build:
+      context: ./tg-bot
+      dockerfile: Dockerfile
+    container_name: moneybot_tg_bot
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_WEBAPP_URL: ${TELEGRAM_WEBAPP_URL:-http://localhost:5174}
+      BACKEND_URL: http://backend:8000
+      REDIS_URL: redis://redis:6379/0
+      ADMIN_TELEGRAM_IDS: ${ADMIN_TELEGRAM_IDS:-}
+    volumes:
+      - ./tg-bot:/app
+
+  tg-mini-app:
+    build:
+      context: ./tg-mini-app
+      dockerfile: Dockerfile
+    container_name: moneybot_tg_mini_app
+    restart: unless-stopped
+    ports:
+      - "${TG_MINI_APP_PORT:-5174}:5174"
+    volumes:
+      - ./tg-mini-app:/app
+      - /app/node_modules
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-}
 
   nginx:
     image: nginx:alpine

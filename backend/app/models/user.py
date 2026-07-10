@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, String, Uuid
+from sqlalchemy import BigInteger, Boolean, DateTime, Enum, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -33,6 +33,10 @@ class User(Base, UUIDMixin, TimestampMixin):
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Telegram
+    telegram_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True, nullable=True)
+    telegram_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(
         Uuid(),

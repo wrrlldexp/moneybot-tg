@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: str = "http://localhost:5173"
 
+    # Telegram
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_WEBAPP_URL: str = ""
+
     # SOCKS proxy для обхода блокировок бирж (Cloudflare WARP)
     SOCKS_PROXY: str = ""
 
