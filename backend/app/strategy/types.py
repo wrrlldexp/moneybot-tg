@@ -49,6 +49,9 @@ class GridParams(StrategyModel):
     # Адаптивные параметры (strategy 5, 6)
     adaptive_timer_sec: int = 15
     fee: Decimal = Decimal("0.001")  # Комиссия биржи (0.1% = 0.001)
+    capitalization_enabled: bool = False
+    capitalization_percent: Decimal = Decimal("100")
+    capitalization_max_order_quote: Decimal | None = None
 
 
 class PlannedOrder(StrategyModel):
@@ -82,6 +85,9 @@ class GridState:
     orders: list[LiveOrder] = field(default_factory=list)
     last_boundary_hit_at: datetime | None = None
     realized_pnl: Decimal = Decimal("0")
+    # Для отчётности все стратегии накапливают realized_pnl в quote.
+    # Reverse дополнительно накапливает эквивалент прибыли в base.
+    realized_base_pnl: Decimal = Decimal("0")
     total_trades: int = 0
     # Адаптивная подсетка
     adaptive_top_idx: int | None = None

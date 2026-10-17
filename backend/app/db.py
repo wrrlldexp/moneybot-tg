@@ -23,8 +23,10 @@ def _create_engine():
     if settings.DATABASE_URL.startswith("sqlite"):
         kwargs["poolclass"] = NullPool
     else:
-        kwargs["pool_size"] = 10
-        kwargs["max_overflow"] = 20
+        kwargs["pool_size"] = settings.DB_POOL_SIZE
+        kwargs["max_overflow"] = settings.DB_MAX_OVERFLOW
+        kwargs["pool_timeout"] = settings.DB_POOL_TIMEOUT_SEC
+        kwargs["pool_recycle"] = settings.DB_POOL_RECYCLE_SEC
     return create_async_engine(settings.DATABASE_URL, **kwargs)
 
 

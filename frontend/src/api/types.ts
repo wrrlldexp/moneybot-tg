@@ -1,7 +1,7 @@
 export type UserRole = "ultraadmin" | "superadmin" | "admin" | "viewer";
 export type GridMode = "paper" | "live";
-export type GridStatus = "draft" | "running" | "stopped" | "error";
-export type StrategyType = "simple" | "capitalization" | "reverse" | "reverse_cap" | "adaptive" | "adaptive_cap";
+export type GridStatus = "draft" | "running" | "stopping" | "stopped" | "error";
+export type StrategyType = "simple" | "adaptive" | "reverse";
 export type OrderSide = "buy" | "sell";
 export type OrderStatus = "pending" | "placed" | "filled" | "cancelled" | "wait" | "error";
 
@@ -46,6 +46,9 @@ export interface Grid {
   mode: GridMode;
   status: GridStatus;
   strategy: StrategyType;
+  capitalization_enabled: boolean;
+  capitalization_percent: string;
+  capitalization_max_order_quote: string | null;
   lot_size: string;
   lot_quote: string | null;
   profit_step: string;
@@ -56,6 +59,7 @@ export interface Grid {
   last_boundary_hit_at: string | null;
   // Адаптивные параметры
   adaptive_timer_sec: number;
+  last_adaptive_at: string | null;
   prepay_base?: string;
   prepay_quote?: string;
   prepay_amount?: string;
@@ -67,6 +71,7 @@ export interface Grid {
   // Статистика
   total_trades: number;
   realized_pnl: string;
+  realized_base_pnl: string;
   // Авто-конвертация
   auto_convert_to: string | null;
   unconverted_pnl: string;

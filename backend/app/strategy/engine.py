@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 
 from app.models.enums import OrderSide, OrderStatus, StrategyType
 from app.strategy.executor import Executor
+from app.strategy.policies import OrderSizingPolicy
+from app.strategy.strategies import get_strategy
 from app.strategy.types import GridParams, GridState, LiveOrder, Ticker
 
 # Точность для BTC-подобных сумм (8 знаков)
@@ -33,6 +35,7 @@ class GridEngine:
 
     async def build_initial_grid(self, center_price: Decimal) -> GridState:
         """Раскладывает сетку от min до max с шагом grid_step и маржой profit_step."""
+        self._validate_grid_math(center_price)
         orders: list[LiveOrder] = []
         idx = 0
 
@@ -79,6 +82,32 @@ class GridEngine:
             )
         return GridState(center_price=center_price, orders=orders)
 
+    def _validate_grid_math(self, center_price: Decimal) -> None:
+        if not Decimal("0") < self.params.capitalization_percent <= Decimal("100"):
+            raise ValueError("capitalization_percent должен быть в диапазоне 0..100")
+        pairs: list[tuple[Decimal, Decimal]] = []
+        for level in range(1, self.params.levels_below + 1):
+            buy = center_price - self.params.grid_step * Decimal(level)
+            if buy > 0:
+                pairs.append((buy, buy + self.params.profit_step))
+        for level in range(1, self.params.levels_above + 1):
+            sell = center_price + self.params.grid_step * Decimal(level)
+            buy = sell - self.params.profit_step
+            if buy <= 0:
+                raise ValueError("profit_step создаёт неположительную цену зеркального BUY")
+            pairs.append((buy, sell))
+        if not pairs:
+            raise ValueError("У сетки нет допустимых ценовых уровней")
+        unprofitable = [
+            (buy, sell)
+            for buy, sell in pairs
+            if self.params.profit_step <= self.params.fee * (buy + sell)
+        ]
+        if unprofitable:
+            raise ValueError(
+                "profit_step не покрывает комиссию полного цикла на всех уровнях сетки"
+            )
+
     def _calc_lot(self, price: Decimal) -> Decimal:
         """Рассчитать размер лота. Если lot_quote задан — пересчёт по цене."""
         if self.params.lot_quote and price > 0:
@@ -118,19 +147,15 @@ class GridEngine:
 
     @property
     def _is_adaptive(self) -> bool:
-        return self.params.strategy in (StrategyType.ADAPTIVE, StrategyType.ADAPTIVE_CAPITALIZATION)
+        return get_strategy(self.params.strategy).boundary_action == "shift"
 
     @property
     def _is_capitalization(self) -> bool:
-        return self.params.strategy in (
-            StrategyType.CAPITALIZATION,
-            StrategyType.REVERSE_CAPITALIZATION,
-            StrategyType.ADAPTIVE_CAPITALIZATION,
-        )
+        return self.params.capitalization_enabled
 
     @property
     def _is_reverse(self) -> bool:
-        return self.params.strategy in (StrategyType.REVERSE, StrategyType.REVERSE_CAPITALIZATION)
+        return get_strategy(self.params.strategy).accumulation_currency == "base"
 
     # ------------------------------------------------------------------
     # Обработка исполнения ордера (on_order_filled) — ядро legacy orderCheck
@@ -170,25 +195,13 @@ class GridEngine:
         strategy: StrategyType,
     ) -> GridState:
         """Купили → ставим ордер на продажу (или перекупку для адаптивных)."""
-        if strategy in (StrategyType.SIMPLE, StrategyType.CAPITALIZATION, StrategyType.REVERSE):
-            # Стратегии 1, 2, 3: продаём по price_sell с amount
-            new_order = await self._flip_order(order, OrderSide.SELL, order.price_sell, order.amount)
-            if new_order is not None:
-                state.orders.append(new_order)
-
-        elif strategy == StrategyType.REVERSE_CAPITALIZATION:
-            # Стратегия 4: продаём по price_sell с базовым лотом (не выросшим)
-            sell_lot = self._calc_lot(order.price)
-            new_order = await self._flip_order(order, OrderSide.SELL, order.price_sell, sell_lot)
-            if new_order is not None:
-                state.orders.append(new_order)
-
-        elif self._is_adaptive:
-            # Стратегии 5, 6 — как простая: продаём по price_sell с пересчётом лота
-            sell_lot = self._calc_lot(order.price_sell)
-            new_order = await self._flip_order(order, OrderSide.SELL, order.price_sell, sell_lot)
-            if new_order is not None:
-                state.orders.append(new_order)
+        # Любая стратегия обязана закрывать весь фактически купленный объём.
+        # lot_quote применяется только к новому BUY, но не пересчитывает SELL.
+        new_order = await self._flip_order(
+            order, OrderSide.SELL, order.price_sell, order_amount,
+        )
+        if new_order is not None:
+            state.orders.append(new_order)
 
         return state
 
@@ -200,90 +213,38 @@ class GridEngine:
         strategy: StrategyType,
     ) -> GridState:
         """Продали → ставим ордер на покупку."""
-        current_profit = self._calc_profit(order, order_amount)
+        net_quote, net_base = self._calc_profit(order, order_amount)
 
-        if strategy == StrategyType.SIMPLE:
-            # Стратегия 1: покупаем по price с пересчётом лота (фиатный лот → стабильный расход USDT)
-            buy_amount = self._calc_lot(order.price)
-            new_order = await self._flip_order(order, OrderSide.BUY, order.price, buy_amount)
-            if new_order is not None:
-                new_order.profit = order.profit + current_profit
-                new_order.count_complete = order.count_complete + 1
-                state.orders.append(new_order)
-                state.total_trades += 1
-                state.realized_pnl += current_profit
+        # Факт завершённого SELL и его PnL фиксируется независимо от того,
+        # удастся ли разместить следующий BUY.
+        state.total_trades += 1
+        state.realized_pnl += net_quote
+        if strategy == StrategyType.REVERSE:
+            state.realized_base_pnl += net_base
 
-        elif strategy == StrategyType.CAPITALIZATION:
-            # Стратегия 2: полная реинвестиция — CSV-логика
-            # sell_total = amount × price_sell (получили USDT с продажи)
-            # fee = sell_total × fee × 2 (комиссия обеих ног)
-            # next_volume = sell_total − fee (чистый объём для реинвестирования)
-            # new_amount = next_volume / price_buy (конвертируем обратно в крипту)
-            sell_total = order.amount * order.price_sell
-            total_fee = _trunc8(sell_total * self.params.fee * Decimal(2))
-            next_volume = _trunc8(sell_total - total_fee)
-            volume_spent = order.amount * order.price
-            current_profit = _trunc8(next_volume - volume_spent)
-            new_amount = _trunc8(next_volume / order.price)
-
-            new_order = await self._flip_order(order, OrderSide.BUY, order.price, new_amount)
-            if new_order is not None:
-                new_order.profit = order.profit + current_profit
-                new_order.count_complete = order.count_complete + 1
-                state.orders.append(new_order)
-                state.total_trades += 1
-                state.realized_pnl += current_profit
-
-        elif strategy == StrategyType.REVERSE:
-            # Стратегия 3: прибыль через price ratio
-            new_amount = order.amount + current_profit
-            new_order = await self._flip_order(order, OrderSide.BUY, order.price, new_amount)
-            if new_order is not None:
-                new_order.profit = order.profit + current_profit
-                new_order.count_complete = order.count_complete + 1
-                state.orders.append(new_order)
-                state.total_trades += 1
-                state.realized_pnl += current_profit
-
-        elif strategy == StrategyType.REVERSE_CAPITALIZATION:
-            # Стратегия 4: реверс + капитализация
-            new_amount = _trunc8(order.amount + current_profit)
-            new_order = await self._flip_order(order, OrderSide.BUY, order.price, new_amount)
-            if new_order is not None:
-                new_order.profit = order.profit + current_profit
-                new_order.count_complete = order.count_complete + 1
-                state.orders.append(new_order)
-                state.total_trades += 1
-                state.realized_pnl += current_profit
-
-        elif strategy == StrategyType.ADAPTIVE:
-            # Стратегия 5 — как простая: покупаем по price с пересчётом лота
-            buy_lot = self._calc_lot(order.price)
-            new_order = await self._flip_order(order, OrderSide.BUY, order.price, buy_lot)
-            if new_order is not None:
-                new_order.profit = order.profit + current_profit
-                new_order.count_complete = order.count_complete + 1
-                state.orders.append(new_order)
-                state.total_trades += 1
-                state.realized_pnl += current_profit
-
-        elif strategy == StrategyType.ADAPTIVE_CAPITALIZATION:
-            # Стратегия 6: как капитализация — реинвест прибыли в лот
-            base_lot = self._calc_lot(order.price)
-            new_lot = _trunc8(base_lot + (current_profit / order.price))
-            new_order = await self._flip_order(order, OrderSide.BUY, order.price, new_lot)
-            if new_order is not None:
-                new_order.amount = new_lot
-                new_order.profit = order.profit + current_profit
-                new_order.count_complete = order.count_complete + 1
-                state.orders.append(new_order)
-                state.total_trades += 1
-                state.realized_pnl += current_profit
+        base_amount = self._calc_lot(order.price)
+        sizing = OrderSizingPolicy.next_buy_amount(
+            strategy=strategy,
+            base_amount=base_amount,
+            completed_amount=order_amount,
+            net_quote_profit=net_quote,
+            net_base_profit=net_base,
+            buy_price=order.price,
+            capitalization_enabled=self.params.capitalization_enabled,
+            capitalization_percent=self.params.capitalization_percent,
+            max_order_quote=self.params.capitalization_max_order_quote,
+        )
+        new_order = await self._flip_order(order, OrderSide.BUY, order.price, sizing.amount)
+        if new_order is not None:
+            strategy_profit = net_base if strategy == StrategyType.REVERSE else net_quote
+            new_order.profit = order.profit + strategy_profit
+            new_order.count_complete = order.count_complete + 1
+            state.orders.append(new_order)
 
         return state
 
-    def _calc_profit(self, order: LiveOrder, order_amount: Decimal) -> Decimal:
-        """Расчёт чистой прибыли от сделки (за вычетом комиссий buy + sell).
+    def _calc_profit(self, order: LiveOrder, order_amount: Decimal) -> tuple[Decimal, Decimal]:
+        """Вернуть чистую прибыль одновременно в quote и base.
 
         Формула: g_net = trunc(q * profit_step - fee * q * (p_buy + p_sell))
         Для reverse: g_net_base = trunc(g_net_quote / p_buy)
@@ -293,12 +254,9 @@ class GridEngine:
         gross_quote = order_amount * self.params.profit_step
         fee_cost = fee * order_amount * (order.price + order.price_sell)
         net_quote = _trunc8(gross_quote - fee_cost)
-        if net_quote <= 0:
-            return Decimal("0")
-        if self._is_reverse:
-            # Reverse: прибыль в base-валюте
-            return _trunc8(net_quote / order.price)
-        return net_quote
+        # Убыток нельзя превращать в ноль: бухгалтерия обязана отражать
+        # фактический результат, а политика размера просто не реинвестирует его.
+        return net_quote, _trunc8(net_quote / order.price)
 
     async def _flip_order(
         self,
@@ -330,7 +288,12 @@ class GridEngine:
     # Адаптивный сдвиг — двигает ВСЮ сетку на дельту
     # ------------------------------------------------------------------
 
-    async def shift_grid(self, state: GridState, current_price: Decimal) -> GridState:
+    async def shift_grid(
+        self,
+        state: GridState,
+        current_price: Decimal,
+        now: datetime | None = None,
+    ) -> GridState:
         """Сдвигает всю сетку на дельту между текущей ценой и крайним ордером.
 
         Цена выше сетки → delta = цена - max(price_sell) → прибавляем ко всем
@@ -373,6 +336,7 @@ class GridEngine:
 
         state.orders.extend(new_orders)
         state.last_boundary_hit_at = None
+        state.last_adaptive_at = now or datetime.now(UTC)
         return state
 
     # ------------------------------------------------------------------
@@ -408,6 +372,7 @@ class GridEngine:
 
         new_state = await self.build_initial_grid(new_center_price)
         new_state.realized_pnl = state.realized_pnl
+        new_state.realized_base_pnl = state.realized_base_pnl
         new_state.total_trades = state.total_trades
         new_state.last_boundary_hit_at = None
         return new_state
@@ -456,7 +421,13 @@ class GridEngine:
         if self.should_rebuild(state, now):
             if self._is_adaptive:
                 # Адаптивная: сдвигаем всю сетку на дельту
-                state = await self.shift_grid(state, ticker.mid)
+                cooldown_ready = (
+                    state.last_adaptive_at is None
+                    or now - state.last_adaptive_at
+                    >= timedelta(seconds=self.params.adaptive_timer_sec)
+                )
+                if cooldown_ready:
+                    state = await self.shift_grid(state, ticker.mid, now)
             else:
                 # Простые стратегии: полная перестройка
                 state = await self.rebuild_grid(state, ticker.mid)

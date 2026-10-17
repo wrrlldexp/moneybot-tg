@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.schemas.common import GridOrderResponse, GridResponse, TradeEventResponse
 from app.schemas.grid import GridCreate, GridDetailResponse, GridUpdate
-from app.services.grid_service import start_grid, stop_grid
+from app.services.grid_service import request_stop_grid, start_grid
 
 router = APIRouter()
 
@@ -86,6 +86,9 @@ async def create_grid(
         symbol=payload.symbol,
         mode=payload.mode,
         strategy=payload.strategy,
+        capitalization_enabled=payload.capitalization_enabled,
+        capitalization_percent=payload.capitalization_percent,
+        capitalization_max_order_quote=payload.capitalization_max_order_quote,
         lot_size=payload.lot_size,
         lot_quote=payload.lot_quote,
         profit_step=payload.profit_step,
@@ -118,7 +121,8 @@ async def get_grid(
 _SETTINGS_SNAPSHOT_FIELDS = [
     "strategy", "lot_size", "lot_quote", "profit_step", "grid_step",
     "levels_above", "levels_below", "rebuild_timeout_sec", "adaptive_timer_sec",
-    "auto_convert_to",
+    "capitalization_enabled", "capitalization_percent",
+    "capitalization_max_order_quote", "auto_convert_to",
 ]
 
 
@@ -130,12 +134,9 @@ def _snapshot_settings(grid: Grid) -> dict:
     }
 
 
-# Параметры, которые можно менять на работающей сетке
-# (не влияют на структуру ордеров, применяются на следующем тике)
-_HOT_UPDATE_FIELDS = {
-    "name", "lot_size", "lot_quote", "profit_step", "rebuild_timeout_sec",
-    "adaptive_timer_sec", "auto_convert_to",
-}
+# Математика запущенной сетки неизменяема. Любая торговая настройка требует
+# остановки, чтобы BUY и соответствующий SELL использовали одну конфигурацию.
+_HOT_UPDATE_FIELDS = {"name"}
 
 
 @router.patch("/{grid_id}", response_model=GridResponse)
@@ -147,9 +148,11 @@ async def update_grid(
     db: AsyncSession = Depends(get_db),
 ) -> GridResponse:
     grid = await _get_grid(db, current_user, grid_id)
-    changes = payload.model_dump(exclude_none=True)
+    # exclude_unset сохраняет намеренное null для nullable-настроек (например,
+    # снятие лимита капитализации), но не затрагивает непереданные поля.
+    changes = payload.model_dump(exclude_unset=True)
 
-    if grid.status == GridStatus.RUNNING:
+    if grid.status in (GridStatus.RUNNING, GridStatus.STOPPING):
         # На работающей сетке разрешены только безопасные параметры
         blocked = set(changes.keys()) - _HOT_UPDATE_FIELDS
         if blocked:
@@ -208,7 +211,7 @@ async def halt_grid(
     db: AsyncSession = Depends(get_db),
 ) -> GridResponse:
     await _get_grid(db, current_user, grid_id)
-    grid = await stop_grid(db, grid_id)
+    grid = await request_stop_grid(db, grid_id)
     await log_action(db, current_user.id, "grid.stop", entity_type="grid", entity_id=str(grid.id), request=request)
     return GridResponse.model_validate(grid)
 
@@ -221,8 +224,8 @@ async def delete_grid(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, bool]:
     grid = await _get_grid(db, current_user, grid_id)
-    if grid.status == GridStatus.RUNNING:
-        await stop_grid(db, grid_id)
+    if grid.status in (GridStatus.RUNNING, GridStatus.STOPPING):
+        raise HTTPException(status_code=409, detail="Сначала остановите сетку и дождитесь статуса stopped")
 
     # Отменяем зависшие ордера на бирже (если stop_grid не снял)
     placed_orders = [o for o in grid.orders if o.status == OrderStatus.PLACED and o.exchange_order_id]

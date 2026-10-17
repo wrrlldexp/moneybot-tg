@@ -71,11 +71,8 @@ import { ConvertModal } from "../components/ConvertModal";
 // ─── Helpers ───
 const STRATEGY_LABELS: Record<string, string> = {
   simple: "Простая",
-  capitalization: "Капитализация",
   reverse: "Реверс",
-  reverse_cap: "Реверс+Кап",
   adaptive: "Адаптивная",
-  adaptive_cap: "Адаптивная+Кап",
 };
 
 const STRATEGY_COLORS = ["#818cf8", "#34d399", "#fbbf24", "#f87171", "#38bdf8", "#a78bfa"];

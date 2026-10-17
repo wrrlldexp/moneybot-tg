@@ -47,6 +47,17 @@ class Grid(Base, UUIDMixin, TimestampMixin):
         default=StrategyType.SIMPLE,
     )
 
+    # Капитализация — ортогональная настройка размера, а не тип стратегии.
+    capitalization_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    capitalization_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=100
+    )
+    capitalization_max_order_quote: Mapped[Decimal | None] = mapped_column(
+        Numeric(20, 8), nullable=True, default=None
+    )
+
     # Параметры сетки
     lot_size: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
     lot_quote: Mapped[Decimal | None] = mapped_column(
@@ -68,6 +79,9 @@ class Grid(Base, UUIDMixin, TimestampMixin):
     # Адаптивная подсетка (strategy 5, 6) — из legacy
     adaptive_timer_sec: Mapped[int] = mapped_column(
         Integer, nullable=False, default=15
+    )
+    last_adaptive_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     adaptive_top_order_idx: Mapped[int | None] = mapped_column(
         Integer, nullable=True
@@ -99,6 +113,9 @@ class Grid(Base, UUIDMixin, TimestampMixin):
     # Статистика
     total_trades: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     realized_pnl: Mapped[Decimal] = mapped_column(
+        Numeric(20, 8), nullable=False, default=0
+    )
+    realized_base_pnl: Mapped[Decimal] = mapped_column(
         Numeric(20, 8), nullable=False, default=0
     )
 

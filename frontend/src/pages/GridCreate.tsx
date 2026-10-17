@@ -12,11 +12,8 @@ import { Select } from "../components/Select";
 
 const STRATEGY_LABELS: Record<StrategyType, string> = {
   simple: "Простая",
-  capitalization: "Капитализация",
-  reverse: "Реверс",
-  reverse_cap: "Реверс + Капитализация",
   adaptive: "Адаптивная",
-  adaptive_cap: "Адаптивная + Капитализация",
+  reverse: "Реверс",
 };
 
 export function GridCreatePage() {
@@ -28,6 +25,9 @@ export function GridCreatePage() {
     symbol: "BTC/USDT",
     mode: "paper",
     strategy: "simple" as StrategyType,
+    capitalization_enabled: false,
+    capitalization_percent: "100",
+    capitalization_max_order_quote: "",
     lot_size: "0.1",
     lot_quote: "",
     profit_step: "50",
@@ -40,7 +40,7 @@ export function GridCreatePage() {
   });
 
   const [error, setError] = useState<string | null>(null);
-  const isAdaptive = form.strategy === "adaptive" || form.strategy === "adaptive_cap";
+  const isAdaptive = form.strategy === "adaptive";
 
   const submit = async () => {
     setError(null);
@@ -58,6 +58,8 @@ export function GridCreatePage() {
         rebuild_timeout_sec: Number(form.rebuild_timeout_sec) || 3600,
         adaptive_timer_sec: Number(form.adaptive_timer_sec) || 15,
         auto_convert_to: form.auto_convert_to || null,
+        capitalization_percent: Number(form.capitalization_percent),
+        capitalization_max_order_quote: form.capitalization_max_order_quote || null,
       });
       navigate(`/grids/${grid.id}`);
     } catch (err: unknown) {
@@ -86,6 +88,24 @@ export function GridCreatePage() {
           </option>
         ))}
       </Select>
+      <label className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
+        <div>
+          <div className="font-medium">Капитализация</div>
+          <div className="text-[10px] text-white/30">Добавлять выбранную долю прибыли к следующему BUY</div>
+        </div>
+        <input
+          type="checkbox"
+          checked={form.capitalization_enabled}
+          onChange={(event) => setForm({ ...form, capitalization_enabled: event.target.checked })}
+          className="h-5 w-5"
+        />
+      </label>
+      {form.capitalization_enabled && (
+        <div className="grid gap-3 md:grid-cols-2">
+          <Input value={form.capitalization_percent} onChange={(event) => setForm({ ...form, capitalization_percent: event.target.value })} placeholder="Процент капитализации" />
+          <Input value={form.capitalization_max_order_quote} onChange={(event) => setForm({ ...form, capitalization_max_order_quote: event.target.value })} placeholder="Максимальный ордер в quote" />
+        </div>
+      )}
       <Select value={form.mode} onChange={(event) => setForm({ ...form, mode: event.target.value })}>
         <option value="paper">Paper</option>
         <option value="live">Live</option>

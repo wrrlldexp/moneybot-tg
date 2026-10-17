@@ -171,7 +171,7 @@ VITE_API_URL=https://your-domain.com
 cd /opt/moneybot
 
 # Собрать и запустить в продакшн-режиме
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+make prod-up
 ```
 
 Первая сборка занимает 3–5 минут. Дождитесь завершения.
@@ -182,7 +182,7 @@ docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 docker compose ps
 ```
 
-Все 6 сервисов должны быть в статусе `Up (healthy)` или `Up`:
+Все 5 основных сервисов должны быть в статусе `Up (healthy)` или `Up`:
 
 ```
 NAME                 STATUS
@@ -191,7 +191,6 @@ moneybot_redis       Up (healthy)
 moneybot_backend     Up (healthy)
 moneybot_worker      Up
 moneybot_frontend    Up
-moneybot_nginx       Up
 ```
 
 **Проверка healthcheck API:**
@@ -274,7 +273,7 @@ nginx:
 
 5. Перезапустите nginx:
 ```bash
-docker compose restart nginx
+docker compose -f docker-compose.prod.yml restart frontend
 ```
 
 ### Без SSL (для теста / по IP)
@@ -285,7 +284,7 @@ docker compose restart nginx
 
 ```bash
 # Добавить в cron
-echo "0 2 * * * certbot renew --quiet && docker compose -f /opt/moneybot/docker-compose.yml restart nginx" | sudo crontab -
+echo "0 2 * * * certbot renew --quiet && docker compose -f /opt/moneybot/docker-compose.prod.yml restart frontend" | sudo crontab -
 ```
 
 ---
@@ -303,7 +302,7 @@ Requires=docker.service
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/moneybot
-ExecStart=/usr/bin/docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+ExecStart=/usr/bin/docker compose -f docker-compose.prod.yml up -d
 ExecStop=/usr/bin/docker compose down
 RemainAfterExit=yes
 User=root
@@ -342,7 +341,7 @@ mkdir -p "$BACKUP_DIR"
 echo "[$(date)] Начинаю бэкап..."
 
 # Дамп PostgreSQL
-docker compose -f /opt/moneybot/docker-compose.yml exec -T postgres \
+docker compose -f /opt/moneybot/docker-compose.prod.yml exec -T postgres \
   pg_dump -U moneybot moneybot | gzip > "$BACKUP_DIR/db_$DATE.sql.gz"
 
 # Копия .env (содержит секреты!)
@@ -399,7 +398,7 @@ cd /opt/moneybot
 git pull
 
 # 3. Пересобрать и перезапустить
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+make prod-up
 
 # 4. Применить новые миграции (если есть)
 docker compose exec backend alembic upgrade head
@@ -501,7 +500,7 @@ docker compose exec backend python -m cli.create_superadmin
 ```bash
 cd /opt/moneybot
 docker compose down -v          # удаляет контейнеры И тома (ДАННЫЕ БУДУТ ПОТЕРЯНЫ!)
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+make prod-up
 docker compose exec backend alembic upgrade head
 docker compose exec backend python -m cli.create_superadmin
 ```

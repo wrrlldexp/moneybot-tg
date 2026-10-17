@@ -50,11 +50,8 @@ const ORDER_COLORS: Record<string, { buy: string; sell: string }> = {
 
 const STRATEGY_LABELS: Record<string, string> = {
   simple: "Простая",
-  capitalization: "Капитализация",
   reverse: "Реверс",
-  reverse_cap: "Реверс+Кап",
   adaptive: "Адаптивная",
-  adaptive_cap: "Адаптивная+Кап",
 };
 
 function getExchangeFromGrid(_grid: Grid): string {

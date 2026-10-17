@@ -16,7 +16,8 @@ export default defineConfig({
         manualChunks: {
           "vendor-react": ["react", "react-dom", "react-router-dom"],
           "vendor-query": ["@tanstack/react-query", "axios", "zustand"],
-          "vendor-charts": ["recharts", "lightweight-charts"],
+          "vendor-recharts": ["recharts"],
+          "vendor-market-chart": ["lightweight-charts"],
           "vendor-motion": ["framer-motion"],
           "vendor-dnd": ["@dnd-kit/core", "@dnd-kit/sortable", "@dnd-kit/utilities"],
         },

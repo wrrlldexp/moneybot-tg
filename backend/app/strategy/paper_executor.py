@@ -27,12 +27,28 @@ class PaperExecutor(Executor):
         initial_quote: Decimal = Decimal("100000"),
         bid: Decimal = Decimal("50000"),
         ask: Decimal = Decimal("50001"),
+        fee: Decimal = Decimal("0.001"),
     ) -> None:
         self.balance = Balance(base=initial_base, quote=initial_quote)
         self._ticker = Ticker(bid=bid, ask=ask)
         self._counter = 0
         self.orders: dict[str, PaperOrder] = {}
         self.filled_order_ids: list[str] = []
+        self.fee = fee
+
+    def _free_balance(self) -> Balance:
+        reserved_base = sum(
+            (o.amount for o in self.orders.values() if o.status == OrderStatus.PLACED and o.side == OrderSide.SELL),
+            start=Decimal("0"),
+        )
+        reserved_quote = sum(
+            (o.price * o.amount * (Decimal("1") + self.fee) for o in self.orders.values() if o.status == OrderStatus.PLACED and o.side == OrderSide.BUY),
+            start=Decimal("0"),
+        )
+        return Balance(
+            base=max(Decimal("0"), self.balance.base - reserved_base),
+            quote=max(Decimal("0"), self.balance.quote - reserved_quote),
+        )
 
     def seed_open_orders(self, live_orders: list[LiveOrder]) -> None:
         self.orders = {
@@ -64,12 +80,12 @@ class PaperExecutor(Executor):
                 continue
             if order.side == OrderSide.BUY and self._ticker.ask <= order.price:
                 self.balance.base += order.amount
-                self.balance.quote -= order.price * order.amount
+                self.balance.quote -= order.price * order.amount * (Decimal("1") + self.fee)
                 order.status = OrderStatus.FILLED
                 filled_ids.append(order.exchange_order_id)
             elif order.side == OrderSide.SELL and self._ticker.bid >= order.price:
                 self.balance.base -= order.amount
-                self.balance.quote += order.price * order.amount
+                self.balance.quote += order.price * order.amount * (Decimal("1") - self.fee)
                 order.status = OrderStatus.FILLED
                 filled_ids.append(order.exchange_order_id)
 
@@ -80,9 +96,18 @@ class PaperExecutor(Executor):
         return self._ticker
 
     async def get_balance(self) -> Balance:
-        return self.balance
+        return self._free_balance()
 
     async def place_order(self, side: OrderSide, price: Decimal, amount: Decimal) -> OrderResult:
+        if price <= 0 or amount <= 0:
+            return OrderResult(exchange_order_id="", success=False, error="invalid_order")
+        free = self._free_balance()
+        if side == OrderSide.BUY:
+            required = price * amount * (Decimal("1") + self.fee)
+            if required > free.quote:
+                return OrderResult(exchange_order_id="", success=False, error="insufficient_quote")
+        elif amount > free.base:
+            return OrderResult(exchange_order_id="", success=False, error="insufficient_base")
         self._counter += 1
         order_id = f"paper-{self._counter}"
         self.orders[order_id] = PaperOrder(order_id, side, price, amount)

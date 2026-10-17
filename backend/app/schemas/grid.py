@@ -15,6 +15,9 @@ class GridCreate(BaseModel):
     symbol: str = "BTC/USDT"
     mode: GridMode = GridMode.PAPER
     strategy: StrategyType = StrategyType.SIMPLE
+    capitalization_enabled: bool = False
+    capitalization_percent: Decimal = Field(default=Decimal("100"), gt=0, le=100)
+    capitalization_max_order_quote: Decimal | None = Field(default=None, gt=0)
     lot_size: Decimal | None = Field(default=None, gt=0, description="Размер лота в базовой валюте")
     lot_quote: Decimal | None = Field(default=None, gt=0, description="Размер лота в котировочной валюте (USDT) — пересчёт при каждом ордере")
 
@@ -40,6 +43,9 @@ class GridUpdate(BaseModel):
     name: str | None = None
     symbol: str | None = None
     strategy: StrategyType | None = None
+    capitalization_enabled: bool | None = None
+    capitalization_percent: Decimal | None = Field(default=None, gt=0, le=100)
+    capitalization_max_order_quote: Decimal | None = Field(default=None, gt=0)
     lot_size: Decimal | None = None
     lot_quote: Decimal | None = None
     profit_step: Decimal | None = None

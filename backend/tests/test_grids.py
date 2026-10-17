@@ -38,6 +38,10 @@ def test_create_and_start_grid(client, auth_headers, seeded_users) -> None:
     started = client.post(f"/api/grids/{grid_id}/start", headers=auth_headers["admin"])
     assert started.status_code == 200
     assert started.json()["status"] == "running"
+    # API — только control-plane: ордера создаёт исключительно Worker.
+    orders = client.get(f"/api/grids/{grid_id}/orders", headers=auth_headers["admin"])
+    assert orders.status_code == 200
+    assert orders.json() == []
 
 
 def test_create_adaptive_grid(client, auth_headers, seeded_users) -> None:
@@ -69,17 +73,17 @@ def test_create_adaptive_grid(client, auth_headers, seeded_users) -> None:
             "levels_below": 3,
             "rebuild_timeout_sec": 60,
             "adaptive_timer_sec": 15,
-            "prepay_base": "0.5",
-            "prepay_quote": "5000",
-            "prepay_amount": "0.05",
+            "capitalization_enabled": True,
+            "capitalization_percent": "50",
         },
     )
     assert created.status_code == 200
     assert created.json()["strategy"] == "adaptive"
-    assert float(created.json()["prepay_amount"]) == 0.05
+    assert created.json()["capitalization_enabled"] is True
+    assert float(created.json()["capitalization_percent"]) == 50
 
 
-def test_admin_cannot_access_other_users_grid(client, auth_headers, seeded_users) -> None:
+def test_superadmin_can_access_admin_grid(client, auth_headers, seeded_users) -> None:
     owner_account = client.post(
         "/api/accounts/",
         headers=auth_headers["admin"],
@@ -112,5 +116,5 @@ def test_admin_cannot_access_other_users_grid(client, auth_headers, seeded_users
 
     foreign_login = client.post("/api/auth/login", json={"email": "root@example.com", "password": "Password123"})
     foreign_headers = {"Authorization": f"Bearer {foreign_login.json()['tokens']['access_token']}"}
-    forbidden = client.get(f"/api/grids/{grid['id']}", headers=foreign_headers)
-    assert forbidden.status_code == 404
+    response = client.get(f"/api/grids/{grid['id']}", headers=foreign_headers)
+    assert response.status_code == 200

@@ -67,6 +67,9 @@ class GridResponse(ORMModel):
     mode: GridMode
     status: GridStatus
     strategy: StrategyType
+    capitalization_enabled: bool
+    capitalization_percent: Decimal
+    capitalization_max_order_quote: Decimal | None
     lot_size: Decimal
     lot_quote: Decimal | None = None
     profit_step: Decimal
@@ -77,6 +80,7 @@ class GridResponse(ORMModel):
     last_boundary_hit_at: datetime | None
     # Адаптивные параметры
     adaptive_timer_sec: int
+    last_adaptive_at: datetime | None
     prepay_base: Decimal
     prepay_quote: Decimal
     prepay_amount: Decimal
@@ -89,6 +93,7 @@ class GridResponse(ORMModel):
     # Статистика
     total_trades: int
     realized_pnl: Decimal
+    realized_base_pnl: Decimal
     # Авто-конвертация
     auto_convert_to: str | None = None
     unconverted_pnl: Decimal = Decimal("0")

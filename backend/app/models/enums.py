@@ -20,19 +20,21 @@ class GridMode(str, enum.Enum):
 class GridStatus(str, enum.Enum):
     DRAFT = "draft"
     RUNNING = "running"
+    STOPPING = "stopping"
     STOPPED = "stopped"
     ERROR = "error"
 
 
 class StrategyType(str, enum.Enum):
-    """Тип стратегии (из legacy MoneyBot v1)."""
+    """Взаимоисключающие алгоритмы поведения сетки.
 
-    SIMPLE = "simple"                           # 1 — фиксированный лот
-    CAPITALIZATION = "capitalization"            # 2 — реинвестирование прибыли в лот
-    REVERSE = "reverse"                         # 3 — расчёт прибыли через price ratio
-    REVERSE_CAPITALIZATION = "reverse_cap"      # 4 — реверс + реинвестирование
-    ADAPTIVE = "adaptive"                       # 5 — скользящая подсетка с prepay
-    ADAPTIVE_CAPITALIZATION = "adaptive_cap"    # 6 — адаптивная + реинвестирование
+    Капитализация намеренно не является стратегией: это настройка размера
+    следующего ордера и может быть включена для любого алгоритма.
+    """
+
+    SIMPLE = "simple"
+    ADAPTIVE = "adaptive"
+    REVERSE = "reverse"
 
 
 class OrderSide(str, enum.Enum):

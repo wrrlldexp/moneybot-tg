@@ -10,7 +10,7 @@ import { useAuthStore } from "./store/auth";
 const WelcomePage = lazy(() => import("./pages/Welcome").then(m => ({ default: m.WelcomePage })));
 const LoginPage = lazy(() => import("./pages/Login").then(m => ({ default: m.LoginPage })));
 const AcceptInvitePage = lazy(() => import("./pages/AcceptInvite").then(m => ({ default: m.AcceptInvitePage })));
-const DashboardPage = lazy(() => import("./pages/Dashboard").then(m => ({ default: m.DashboardPage })));
+const DashboardPage = lazy(() => import("./pages/DashboardV2").then(m => ({ default: m.DashboardV2Page })));
 const GridListPage = lazy(() => import("./pages/GridList").then(m => ({ default: m.GridListPage })));
 const GridCreatePage = lazy(() => import("./pages/GridCreate").then(m => ({ default: m.GridCreatePage })));
 const GridDetailPage = lazy(() => import("./pages/GridDetail").then(m => ({ default: m.GridDetailPage })));

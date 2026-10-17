@@ -17,15 +17,12 @@ import { useToast } from "../components/Toast";
 
 const STRATEGY_LABELS: Record<string, string> = {
   simple: "Простая",
-  capitalization: "Капитализация",
   reverse: "Реверс",
-  reverse_cap: "Реверс + Капитализация",
   adaptive: "Адаптивная",
-  adaptive_cap: "Адаптивная + Капитализация",
 };
 
 // Параметры для hot-update (можно менять на работающей сетке)
-const HOT_PARAMS = ["name", "lot_size", "lot_quote", "profit_step", "rebuild_timeout_sec", "adaptive_timer_sec", "auto_convert_to"];
+const HOT_PARAMS = ["name"];
 
 interface EditForm {
   name: string;
@@ -37,6 +34,9 @@ interface EditForm {
   levels_below: string;
   rebuild_timeout_sec: string;
   adaptive_timer_sec: string;
+  capitalization_enabled: boolean;
+  capitalization_percent: string;
+  capitalization_max_order_quote: string;
   auto_convert_to: string;
 }
 
@@ -61,7 +61,8 @@ export function GridDetailPage() {
   if (!grid) return <div className="flex justify-center py-16"><Spinner /></div>;
 
   const isRunning = grid.status === "running";
-  const isAdaptive = grid.strategy === "adaptive" || grid.strategy === "adaptive_cap";
+  const isStopping = grid.status === "stopping";
+  const isAdaptive = grid.strategy === "adaptive";
 
   const chartData = events
     .slice()
@@ -88,6 +89,9 @@ export function GridDetailPage() {
       levels_below: String(grid.levels_below),
       rebuild_timeout_sec: String(grid.rebuild_timeout_sec),
       adaptive_timer_sec: String(grid.adaptive_timer_sec ?? 15),
+      capitalization_enabled: grid.capitalization_enabled,
+      capitalization_percent: String(grid.capitalization_percent),
+      capitalization_max_order_quote: grid.capitalization_max_order_quote ?? "",
       auto_convert_to: grid.auto_convert_to ?? "",
     });
     setShowEdit(true);
@@ -108,6 +112,9 @@ export function GridDetailPage() {
       if (editForm.levels_below !== String(grid.levels_below)) payload.levels_below = Number(editForm.levels_below);
       if (editForm.rebuild_timeout_sec !== String(grid.rebuild_timeout_sec)) payload.rebuild_timeout_sec = Number(editForm.rebuild_timeout_sec);
       if (editForm.adaptive_timer_sec !== String(grid.adaptive_timer_sec ?? 15)) payload.adaptive_timer_sec = Number(editForm.adaptive_timer_sec);
+      if (editForm.capitalization_enabled !== grid.capitalization_enabled) payload.capitalization_enabled = editForm.capitalization_enabled;
+      if (editForm.capitalization_percent !== String(grid.capitalization_percent)) payload.capitalization_percent = Number(editForm.capitalization_percent);
+      if (editForm.capitalization_max_order_quote !== (grid.capitalization_max_order_quote ?? "")) payload.capitalization_max_order_quote = editForm.capitalization_max_order_quote || null;
       if (editForm.auto_convert_to !== (grid.auto_convert_to ?? "")) payload.auto_convert_to = editForm.auto_convert_to || null;
 
       if (Object.keys(payload).length === 0) {
@@ -133,6 +140,13 @@ export function GridDetailPage() {
     try {
       if (isRunning) {
         await stopGrid(grid.id);
+        toast("Сначала останавливаем сетку. Удалите её после статуса «Остановлена».", "info");
+        refresh();
+        return;
+      }
+      if (isStopping) {
+        setError("Дождитесь завершения остановки Worker");
+        return;
       }
       await deleteGrid(grid.id);
       void queryClient.invalidateQueries({ queryKey: ["grids"] });
@@ -154,6 +168,7 @@ export function GridDetailPage() {
           <div className="text-2xl font-bold">{grid.name}</div>
           <div className="text-sm text-hint">
             {grid.symbol} · {grid.mode === "live" ? "Боевой" : "Бумажный"} · {STRATEGY_LABELS[grid.strategy] || grid.strategy}
+            {grid.capitalization_enabled ? ` · капитализация ${grid.capitalization_percent}%` : ""}
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -164,14 +179,14 @@ export function GridDetailPage() {
             <>
               <Button
                 loading={toggling}
-                disabled={toggling}
+                disabled={toggling || isStopping}
                 onClick={async () => {
                   setToggling(true);
                   try {
                     setError("");
                     if (isRunning) {
                       await stopGrid(grid.id);
-                      toast("Сетка остановлена", "info");
+                      toast("Команда остановки передана Worker", "info");
                     } else {
                       await startGrid(grid.id);
                       toast("Сетка запущена", "success");
@@ -184,7 +199,7 @@ export function GridDetailPage() {
                   }
                 }}
               >
-                {isRunning ? "Стоп" : "Запуск"}
+                {isStopping ? "Останавливается…" : isRunning ? "Стоп" : "Запуск"}
               </Button>
               <Button className="bg-white/5 text-white/70 hover:bg-white/10" onClick={openEdit}>
                 Настроить
@@ -343,7 +358,7 @@ export function GridDetailPage() {
             </h2>
             {isRunning && (
               <div className="rounded-xl bg-amber-400/10 p-3 text-xs text-amber-200">
-                Сетка запущена. Доступны: название, лот, шаг профита, таймеры, доплата. Для изменения шага сетки и уровней — остановите сетку.
+                Сетка запущена. Чтобы не смешивать математику разных конфигураций, изменить можно только название. Для остальных настроек сначала остановите сетку.
               </div>
             )}
 
@@ -390,6 +405,19 @@ export function GridDetailPage() {
                 <Input value={editForm.auto_convert_to} onChange={(e) => setEditForm({ ...editForm, auto_convert_to: e.target.value })} placeholder="напр. USDC (пусто = выкл)" />
                 <div className="mt-1 text-[10px] text-white/30">Прибыль автоматически переводится в указанную валюту при накоплении от $1.10</div>
               </div>
+              <label className="flex items-center justify-between rounded-xl bg-white/5 p-3">
+                <div>
+                  <div className="text-sm font-medium">Капитализация</div>
+                  <div className="text-[10px] text-white/30">Добавлять часть прибыли к следующему BUY</div>
+                </div>
+                <input type="checkbox" checked={editForm.capitalization_enabled} onChange={(e) => setEditForm({ ...editForm, capitalization_enabled: e.target.checked })} disabled={isRunning} className="h-5 w-5" />
+              </label>
+              {editForm.capitalization_enabled && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Input value={editForm.capitalization_percent} onChange={(e) => setEditForm({ ...editForm, capitalization_percent: e.target.value })} disabled={isRunning} placeholder="Процент" />
+                  <Input value={editForm.capitalization_max_order_quote} onChange={(e) => setEditForm({ ...editForm, capitalization_max_order_quote: e.target.value })} disabled={isRunning} placeholder="Макс. ордер в quote" />
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="mb-1 block text-xs text-white/50">

@@ -1,77 +1,141 @@
-# Production overrides — use with:
-# docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+name: moneybot
+
 services:
-  backend:
-    volumes: []
-    network_mode: host
-    ports: !reset []
-    depends_on: !reset {}
-    command: bash -c "sleep 10 && alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-moneybot}:${POSTGRES_PASSWORD}@127.0.0.1:5432/${POSTGRES_DB:-moneybot}
-      REDIS_URL: redis://127.0.0.1:6379/0
-      JWT_SECRET: ${JWT_SECRET}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
-      ENVIRONMENT: ${ENVIRONMENT:-production}
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173}
-      SOCKS_PROXY: ${SOCKS_PROXY:-}
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
-
-  worker:
-    volumes: []
-    network_mode: host
-    ports: !reset []
-    depends_on: !reset {}
-    command: bash -c "sleep 15 && python -m worker.main"
-    environment:
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-moneybot}:${POSTGRES_PASSWORD}@127.0.0.1:5432/${POSTGRES_DB:-moneybot}
-      REDIS_URL: redis://127.0.0.1:6379/0
-      JWT_SECRET: ${JWT_SECRET}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
-      ENVIRONMENT: ${ENVIRONMENT:-production}
-      SOCKS_PROXY: ${SOCKS_PROXY:-}
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-          cpus: "1.0"
-
-  frontend:
-    command: sh -c "npm run build && npm run preview -- --host 0.0.0.0 --port 5173"
-    volumes:
-      - /app/node_modules
-    deploy:
-      resources:
-        limits:
-          memory: 1024M
-          cpus: "1.0"
-
-  nginx:
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    depends_on:
-      frontend:
-        condition: service_started
-    deploy:
-      resources:
-        limits:
-          memory: 64M
-          cpus: "0.25"
-
   postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-moneybot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-moneybot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: &logging
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
     deploy:
       resources:
         limits:
-          memory: 512M
-          cpus: "1.0"
+          memory: 768M
+          cpus: "1.5"
 
   redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment: &backend_env
+      ENVIRONMENT: production
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-moneybot}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-moneybot}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required}
+      SOCKS_PROXY: ${SOCKS_PROXY:-}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-20}
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-2} --proxy-headers --forwarded-allow-ips=*"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\", timeout=2)' "]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    tmpfs:
+      - /tmp:size=64m
+    logging: *logging
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "1.5"
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    init: true
+    depends_on:
+      backend:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment: *backend_env
+    command: ["python", "-m", "worker.main"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import asyncio, redis.asyncio as r; c=r.from_url(\"$${REDIS_URL}\"); assert asyncio.run(c.exists(\"worker:heartbeat\"))' "]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    tmpfs:
+      - /tmp:size=64m
+    logging: *logging
+    stop_grace_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+          cpus: "1.5"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+      args:
+        VITE_API_URL: ""
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-80}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    logging: *logging
     deploy:
       resources:
         limits:
           memory: 128M
           cpus: "0.5"
+
+volumes:
+  postgres_data:
+  redis_data:

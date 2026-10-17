@@ -35,7 +35,8 @@ async def test_sell_fill_places_mirror_buy(engine) -> None:
 @pytest.mark.asyncio
 async def test_capitalization_increases_amount() -> None:
     params = GridParams(
-        strategy=StrategyType.CAPITALIZATION,
+        strategy=StrategyType.SIMPLE,
+        capitalization_enabled=True,
         lot_size=Decimal("0.1"),
         profit_step=Decimal("50"),
         grid_step=Decimal("100"),
@@ -82,8 +83,31 @@ async def test_reverse_profit_calculation() -> None:
 
     state = await engine.on_order_filled(state, sell_order, Decimal("0.1"))
     assert state.realized_pnl > Decimal("0")
-    # Реверс: profit = amount * profit_step / price
-    # Новый buy должен иметь amount = old_amount + profit
+    assert state.realized_base_pnl > Decimal("0")
+    # Без капитализации Reverse накапливает base-PnL отдельно, но не меняет лот.
     new_buys = [o for o in state.orders if o.side == OrderSide.BUY and o.grid_index == sell_order.grid_index]
     assert len(new_buys) >= 1
-    assert new_buys[0].amount > Decimal("0.1")
+    assert new_buys[0].amount == Decimal("0.1")
+
+
+@pytest.mark.asyncio
+async def test_reverse_capitalization_increases_traded_base() -> None:
+    params = GridParams(
+        strategy=StrategyType.REVERSE,
+        capitalization_enabled=True,
+        capitalization_percent=Decimal("100"),
+        lot_size=Decimal("0.1"),
+        profit_step=Decimal("50"),
+        grid_step=Decimal("100"),
+        levels_above=2,
+        levels_below=2,
+    )
+    executor = PaperExecutor(initial_base=Decimal("10"), initial_quote=Decimal("100000"), bid=Decimal("1000"), ask=Decimal("1000"))
+    engine = GridEngine(params, executor)
+    state = await engine.build_initial_grid(Decimal("1000"))
+    sell_order = next(o for o in state.orders if o.side == OrderSide.SELL)
+
+    state = await engine.on_order_filled(state, sell_order, Decimal("0.1"))
+
+    new_buy = next(o for o in state.orders if o.side == OrderSide.BUY and o.grid_index == sell_order.grid_index)
+    assert new_buy.amount > Decimal("0.1")

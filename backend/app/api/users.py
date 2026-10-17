@@ -39,7 +39,7 @@ def _check_ultraadmin_guard(current_user: User, target_role: UserRole | None = N
 
 @router.get("/", response_model=list[UserResponse])
 async def list_users(
-    current_user: User = Depends(require_role(UserRole.VIEWER, UserRole.ADMIN, UserRole.SUPERADMIN)),
+    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.SUPERADMIN)),
     db: AsyncSession = Depends(get_db),
 ) -> list[UserResponse]:
     result = await db.execute(select(User).order_by(User.created_at.desc()))

@@ -49,17 +49,19 @@ async def main() -> None:
     await bot_logger.info("Воркер запущен, слушаю команды сеток")
 
     async def run_grid_loop(grid_id: uuid.UUID) -> None:
-        tick_interval = 0.1
+        tick_interval = 1.0
         consecutive_timeouts = 0
 
         while not _shutdown.is_set():
             try:
                 async with AsyncSessionLocal() as session:
-                    await asyncio.wait_for(
-                        tick_grid(session, grid_id),
-                        timeout=TICK_TIMEOUT,
-                    )
+                    async with registry.get_lock(grid_id):
+                        grid = await asyncio.wait_for(
+                            tick_grid(session, grid_id),
+                            timeout=TICK_TIMEOUT,
+                        )
                     await session.commit()
+                    tick_interval = max(0.1, float(grid.tick_interval_sec))
                 _last_tick[grid_id] = time.monotonic()
                 consecutive_timeouts = 0
             except asyncio.TimeoutError:
@@ -182,8 +184,9 @@ async def main() -> None:
         if action == "start" and grid_id not in _tasks:
             _tasks[grid_id] = asyncio.create_task(run_grid_loop(grid_id))
         elif action == "stop" and grid_id in _tasks:
-            _tasks[grid_id].cancel()
-            _tasks.pop(grid_id, None)
+            task = _tasks.pop(grid_id)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
             _last_tick.pop(grid_id, None)
             async with AsyncSessionLocal() as session:
                 await stop_grid(session, grid_id)
@@ -208,14 +211,27 @@ async def main() -> None:
                 async with AsyncSessionLocal() as session:
                     result = await session.execute(select(Grid).where(Grid.status == GridStatus.RUNNING))
                     db_running = {grid.id for grid in result.scalars().all()}
-                active_ids = set(_tasks.keys())
-                missing = db_running - active_ids
-                for grid_id in missing:
-                    log.warning("worker.sync_missing_grid", grid_id=str(grid_id))
-                    await bot_logger.warning(f"Синхронизация: запускаю пропущенную сетку", grid_id=grid_id)
-                    _tasks[grid_id] = asyncio.create_task(run_grid_loop(grid_id))
+                    active_ids = set(_tasks.keys())
+                    missing = db_running - active_ids
+                    for grid_id in missing:
+                        log.warning("worker.sync_missing_grid", grid_id=str(grid_id))
+                        await bot_logger.warning("Синхронизация: запускаю пропущенную сетку", grid_id=grid_id)
+                        _tasks[grid_id] = asyncio.create_task(run_grid_loop(grid_id))
+
+                    stopping_result = await session.execute(
+                        select(Grid).where(Grid.status == GridStatus.STOPPING)
+                    )
+                    stopping_grids = list(stopping_result.scalars().all())
+                    for stopping_grid in stopping_grids:
+                        task = _tasks.pop(stopping_grid.id, None)
+                        if task is not None:
+                            task.cancel()
+                            await asyncio.gather(task, return_exceptions=True)
+                        _last_tick.pop(stopping_grid.id, None)
+                        await stop_grid(session, stopping_grid.id)
+                    await session.commit()
             except Exception:
-                pass
+                log.exception("worker.sync_failed")
 
     async def watchdog() -> None:
         """Перезапуск зависших grid-лупов."""

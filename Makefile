@@ -1,4 +1,4 @@
-.PHONY: help init up down restart logs ps build rebuild migrate makemigration superadmin test lint format clean
+.PHONY: help init up down restart logs ps build rebuild prod-up prod-down prod-logs prod-check migrate makemigration superadmin test lint format clean
 
 help:
 	@echo "MoneyBot v2 — доступные команды:"
@@ -13,6 +13,9 @@ help:
 	@echo "  make ps             — статус сервисов"
 	@echo "  make build          — собрать образы"
 	@echo "  make rebuild        — пересобрать образы с нуля"
+	@echo "  make prod-check     — проверить production compose"
+	@echo "  make prod-up        — собрать и запустить production"
+	@echo "  make prod-down      — остановить production"
 	@echo ""
 	@echo "  make migrate        — применить миграции БД"
 	@echo "  make makemigration m=\"описание\" — создать новую миграцию"
@@ -70,6 +73,18 @@ build:
 
 rebuild:
 	docker compose build --no-cache
+
+prod-check:
+	docker compose -f docker-compose.prod.yml config --quiet
+
+prod-up: prod-check
+	docker compose -f docker-compose.prod.yml up -d --build
+
+prod-down:
+	docker compose -f docker-compose.prod.yml down
+
+prod-logs:
+	docker compose -f docker-compose.prod.yml logs -f
 
 migrate:
 	docker compose exec backend alembic upgrade head

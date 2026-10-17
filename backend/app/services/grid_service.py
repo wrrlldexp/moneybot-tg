@@ -21,6 +21,7 @@ from app.models import (
     GridOrder,
     GridStatus,
     OrderStatus,
+    StrategyType,
     TradeEvent,
     TradeEventType,
 )
@@ -57,6 +58,9 @@ def _params_from_grid(grid: Grid) -> GridParams:
         levels_below=grid.levels_below,
         rebuild_timeout_sec=grid.rebuild_timeout_sec,
         adaptive_timer_sec=grid.adaptive_timer_sec,
+        capitalization_enabled=grid.capitalization_enabled,
+        capitalization_percent=grid.capitalization_percent,
+        capitalization_max_order_quote=grid.capitalization_max_order_quote,
     )
 
 
@@ -72,11 +76,13 @@ async def _load_grid(db: AsyncSession, grid_id: uuid.UUID) -> Grid:
 async def _persist_state(db: AsyncSession, grid: Grid, state: GridState) -> None:
     grid.last_boundary_hit_at = state.last_boundary_hit_at
     grid.realized_pnl = state.realized_pnl
+    grid.realized_base_pnl = state.realized_base_pnl
     grid.total_trades = state.total_trades
     grid.adaptive_top_order_idx = state.adaptive_top_idx
     grid.adaptive_bottom_order_idx = state.adaptive_bottom_idx
     grid.prepay_base_tail = state.prepay_base_tail
     grid.prepay_quote_tail = state.prepay_quote_tail
+    grid.last_adaptive_at = state.last_adaptive_at
 
     existing_by_exchange_id = {
         order.exchange_order_id: order
@@ -163,15 +169,17 @@ def _state_from_grid(grid: Grid) -> GridState:
         orders=live_orders,
         last_boundary_hit_at=grid.last_boundary_hit_at,
         realized_pnl=grid.realized_pnl,
+        realized_base_pnl=grid.realized_base_pnl,
         total_trades=grid.total_trades,
         adaptive_top_idx=grid.adaptive_top_order_idx,
         adaptive_bottom_idx=grid.adaptive_bottom_order_idx,
         prepay_base_tail=grid.prepay_base_tail,
         prepay_quote_tail=grid.prepay_quote_tail,
+        last_adaptive_at=grid.last_adaptive_at,
     )
 
 
-async def _ensure_runtime(grid: Grid) -> tuple[GridEngine, GridState]:
+async def _ensure_runtime(db: AsyncSession, grid: Grid) -> tuple[GridEngine, GridState]:
     engine = registry.engines.get(grid.id)
     state = registry.states.get(grid.id)
     if engine is not None and state is not None:
@@ -183,6 +191,20 @@ async def _ensure_runtime(grid: Grid) -> tuple[GridEngine, GridState]:
     if isinstance(executor, PaperExecutor):
         executor.seed_open_orders(state.orders)
 
+    # Только Worker вызывает _ensure_runtime и только он имеет право строить
+    # сетку/размещать ордера. API лишь меняет статус и отправляет команду.
+    if grid.status == GridStatus.RUNNING and not any(
+        order.status == OrderStatus.PLACED for order in state.orders
+    ):
+        ticker = await executor.get_ticker()
+        center_price = ticker.mid if ticker.mid > 0 else grid.grid_step * Decimal("10")
+        new_state = await engine.build_initial_grid(center_price)
+        new_state.realized_pnl = state.realized_pnl
+        new_state.realized_base_pnl = state.realized_base_pnl
+        new_state.total_trades = state.total_trades
+        state = new_state
+        await _persist_state(db, grid, state)
+
     registry.executors[grid.id] = executor
     registry.engines[grid.id] = engine
     registry.states[grid.id] = state
@@ -192,58 +214,21 @@ async def _ensure_runtime(grid: Grid) -> tuple[GridEngine, GridState]:
 async def start_grid(db: AsyncSession, grid_id: uuid.UUID) -> Grid:
     grid = await _load_grid(db, grid_id)
 
-    # C-4: защита от конкурентного запуска через lock
+    # API control-plane: никаких Executor/GridEngine и биржевых вызовов.
     async with registry.get_lock(grid.id):
-        if grid.status == GridStatus.RUNNING and grid.orders:
-            await publish("grids:commands", json.dumps({"action": "start", "grid_id": str(grid.id)}))
-            return grid
-
-        # Закрываем старый executor если есть
-        old_executor = registry.executors.pop(grid.id, None)
-        if old_executor is not None:
-            close = getattr(old_executor, "close", None)
-            if callable(close):
-                await close()
-
-        # Удаляем старые error-ордера перед новым запуском
+        # Старые ERROR записи не являются частью восстанавливаемого runtime.
         await db.execute(
             delete(GridOrder).where(
                 GridOrder.grid_id == grid.id,
                 GridOrder.status == OrderStatus.ERROR,
             )
         )
-        await db.flush()
-
-        # Сохраняем PnL и trades до перезапуска
-        prev_pnl = grid.realized_pnl
-        prev_trades = grid.total_trades
-
-        executor = await _create_executor(grid.account, grid)
-        try:
-            engine = GridEngine(_params_from_grid(grid), executor)
-
-            ticker = await executor.get_ticker()
-            center_price = ticker.mid if ticker.mid > 0 else grid.grid_step * Decimal("10")
-            state = await engine.build_initial_grid(center_price)
-            # Восстанавливаем накопленные PnL и trades
-            state.realized_pnl = prev_pnl
-            state.total_trades = prev_trades
-        except Exception:
-            # L-3: закрываем executor при ошибке build
-            close = getattr(executor, "close", None)
-            if callable(close):
-                await close()
-            raise
-
         grid.status = GridStatus.RUNNING
         grid.started_at = datetime.now(UTC)
-        await _persist_state(db, grid, state)
+        await db.flush()
+        # Команда публикуется только после видимого Worker-у состояния.
+        await db.commit()
 
-        registry.executors[grid.id] = executor
-        registry.engines[grid.id] = engine
-        registry.states[grid.id] = state
-
-    await db.flush()
     await publish("grids:commands", json.dumps({"action": "start", "grid_id": str(grid.id)}))
     await bot_logger.info(
         f"Сетка запущена: {grid.name} ({grid.symbol}), стратегия {grid.strategy.value}",
@@ -255,26 +240,63 @@ async def start_grid(db: AsyncSession, grid_id: uuid.UUID) -> Grid:
 
 async def stop_grid(db: AsyncSession, grid_id: uuid.UUID) -> Grid:
     grid = await _load_grid(db, grid_id)
-    state = registry.states.get(grid.id)
-    executor = registry.executors.get(grid.id)
-    if state is not None and executor is not None:
-        for order in state.orders:
-            if order.status == OrderStatus.PLACED:
-                await executor.cancel_order(order.exchange_order_id)
-                order.status = OrderStatus.CANCELLED
-        await _persist_state(db, grid, state)
+    async with registry.get_lock(grid.id):
+        state = registry.states.get(grid.id)
+        executor = registry.executors.get(grid.id)
+        owns_executor = executor is None
+        if executor is None:
+            executor = await _create_executor(grid.account, grid)
 
-    grid.status = GridStatus.STOPPED
-    grid.stopped_at = datetime.now(UTC)
-    registry.states.pop(grid.id, None)
-    registry.engines.pop(grid.id, None)
-    removed_executor = registry.executors.pop(grid.id, None)
-    if removed_executor is not None:
-        close = getattr(removed_executor, "close", None)
-        if callable(close):
-            await close()
-    await publish("grids:commands", json.dumps({"action": "stop", "grid_id": str(grid.id)}))
+        known_ids = {
+            order.exchange_order_id
+            for order in grid.orders
+            if order.status == OrderStatus.PLACED and order.exchange_order_id
+        }
+        if state is not None:
+            known_ids.update(
+                order.exchange_order_id
+                for order in state.orders
+                if order.status == OrderStatus.PLACED and order.exchange_order_id
+            )
+
+        # Отменяем только ордера этой сетки, не затрагивая соседние сетки пары.
+        open_orders = await executor.get_open_orders()
+        open_ids = {item["id"] for item in open_orders or []}
+        for exchange_order_id in known_ids:
+            if not open_orders or exchange_order_id in open_ids:
+                await executor.cancel_order(exchange_order_id)
+
+        for model in grid.orders:
+            if model.exchange_order_id in known_ids and model.status == OrderStatus.PLACED:
+                model.status = OrderStatus.CANCELLED
+        if state is not None:
+            for order in state.orders:
+                if order.exchange_order_id in known_ids and order.status == OrderStatus.PLACED:
+                    order.status = OrderStatus.CANCELLED
+            await _persist_state(db, grid, state)
+
+        grid.status = GridStatus.STOPPED
+        grid.stopped_at = datetime.now(UTC)
+        registry.states.pop(grid.id, None)
+        registry.engines.pop(grid.id, None)
+        removed_executor = registry.executors.pop(grid.id, None)
+        executor_to_close = removed_executor or (executor if owns_executor else None)
+        if executor_to_close is not None:
+            close = getattr(executor_to_close, "close", None)
+            if callable(close):
+                await close()
+
     await bot_logger.info(f"Сетка остановлена: {grid.name}", grid_id=grid.id)
+    return grid
+
+
+async def request_stop_grid(db: AsyncSession, grid_id: uuid.UUID) -> Grid:
+    """Control-plane stop: состояние сначала фиксируется, торгует только Worker."""
+    grid = await _load_grid(db, grid_id)
+    grid.status = GridStatus.STOPPING
+    await db.flush()
+    await db.commit()
+    await publish("grids:commands", json.dumps({"action": "stop", "grid_id": str(grid.id)}))
     return grid
 
 
@@ -415,7 +437,7 @@ _MIN_CONVERT_AMOUNT = Decimal("1.1")
 async def tick_grid(db: AsyncSession, grid_id: uuid.UUID) -> Grid:
     grid = await _load_grid(db, grid_id)
     try:
-        engine, state = await _ensure_runtime(grid)
+        engine, state = await _ensure_runtime(db, grid)
 
         # Сохраняем до тика: tick() мутирует state in-place, new_state IS state
         prev_pnl = state.realized_pnl
@@ -455,7 +477,9 @@ async def tick_grid(db: AsyncSession, grid_id: uuid.UUID) -> Grid:
             )
 
             # Авто-конвертация прибыли
-            if grid.auto_convert_to and pnl_delta > 0:
+            # Reverse накапливает base-актив; его нельзя неявно продавать через
+            # quote auto-convert. Для него нужна отдельная явная политика вывода.
+            if grid.strategy != StrategyType.REVERSE and grid.auto_convert_to and pnl_delta > 0:
                 grid.unconverted_pnl = (grid.unconverted_pnl or Decimal("0")) + pnl_delta
                 if grid.unconverted_pnl >= _MIN_CONVERT_AMOUNT:
                     executor = registry.executors.get(grid.id)
