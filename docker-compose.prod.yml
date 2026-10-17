@@ -96,7 +96,7 @@ services:
     environment: *backend_env
     command: ["python", "-m", "worker.main"]
     healthcheck:
-      test: ["CMD-SHELL", "python -c 'import asyncio, redis.asyncio as r; c=r.from_url(\"$${REDIS_URL}\"); assert asyncio.run(c.exists(\"worker:heartbeat\"))' "]
+      test: ["CMD-SHELL", "python -c 'import asyncio, os, redis.asyncio as r; c=r.from_url(os.environ[\"REDIS_URL\"]); assert asyncio.run(c.exists(\"worker:heartbeat\"))' "]
       interval: 20s
       timeout: 5s
       retries: 5
