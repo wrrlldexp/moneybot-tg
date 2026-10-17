@@ -4,7 +4,8 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
     VIRTUAL_ENV=/opt/venv
 
-RUN python -m venv ${VIRTUAL_ENV} && \
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && \
+    python -m venv ${VIRTUAL_ENV} && \
     apt-get update && apt-get install -y --no-install-recommends build-essential libpq-dev && \
     rm -rf /var/lib/apt/lists/*
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
@@ -21,7 +22,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:${PATH}"
 
-RUN apt-get update && apt-get install -y --no-install-recommends libpq5 && \
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends libpq5 && \
     rm -rf /var/lib/apt/lists/* && \
     groupadd --system moneybot && useradd --system --gid moneybot --home /app moneybot
 
