@@ -2,6 +2,7 @@ FROM python:3.12-slim AS builder
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
     VIRTUAL_ENV=/opt/venv
 
 RUN sed -i -e 's|http://deb.debian.org/debian-security|https://mirror.yandex.ru/debian-security|g' \
