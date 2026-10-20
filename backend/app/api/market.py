@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Query
 
 import ccxt.async_support as ccxt
 
+from app.strategy.executors.ccxt_executor import SUPPORTED_EXCHANGES, create_ccxt_exchange
+
 router = APIRouter(prefix="/api/market", tags=["market"])
 
 # Кэш exchange-инстансов (без API-ключей — только публичные данные)
@@ -14,10 +16,9 @@ _exchanges: dict[str, ccxt.Exchange] = {}
 
 async def _get_exchange(name: str) -> ccxt.Exchange:
     if name not in _exchanges:
-        cls = getattr(ccxt, name, None)
-        if cls is None:
+        if name not in SUPPORTED_EXCHANGES:
             raise HTTPException(400, f"Биржа {name} не поддерживается")
-        _exchanges[name] = cls({"enableRateLimit": True})
+        _exchanges[name] = create_ccxt_exchange(name)
     return _exchanges[name]
 
 

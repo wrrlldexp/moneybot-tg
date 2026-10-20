@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+import ccxt
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -28,6 +29,17 @@ class ConvertRequest(BaseModel):
     amount: float = Field(..., gt=0, description="Количество from_currency для конвертации")
 
 router = APIRouter()
+
+
+def _safe_exchange_error(exc: Exception) -> str:
+    """Return a useful message without leaking credentials or signed URLs."""
+    if isinstance(exc, (ccxt.RequestTimeout, ccxt.NetworkError)):
+        return "Биржа временно недоступна с сервера"
+    if isinstance(exc, ccxt.AuthenticationError):
+        return "API-ключ отклонён биржей"
+    if isinstance(exc, ccxt.PermissionDenied):
+        return "API-ключу не хватает разрешений"
+    return f"Ошибка подключения ({type(exc).__name__})"
 
 
 @router.get("/", response_model=list[ExchangeAccountResponse])
@@ -56,12 +68,10 @@ async def get_balances(
 
     balances = []
     for account in accounts:
+        executor = None
         try:
             executor = account.to_executor(paper_mode=False)
             raw = await executor.exchange.fetch_balance()
-            close = getattr(executor, "close", None)
-            if callable(close):
-                await close()
             free = raw.get("free", {})
             total = raw.get("total", {})
             used = raw.get("used", {})
@@ -85,15 +95,18 @@ async def get_balances(
                 "testnet": account.is_testnet,
                 "currencies": currencies,
             })
-        except Exception:
+        except Exception as exc:
             balances.append({
                 "account_id": str(account.id),
                 "name": account.name,
                 "exchange": account.exchange,
                 "testnet": account.is_testnet,
                 "currencies": [],
-                "error": "Не удалось получить баланс",
+                "error": _safe_exchange_error(exc),
             })
+        finally:
+            if executor is not None:
+                await executor.close()
     return balances
 
 
@@ -180,12 +193,10 @@ async def test_account(
     if account is None:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    executor = None
     try:
         executor = account.to_executor(paper_mode=False)
         balance = await executor.get_balance()
-        close = getattr(executor, "close", None)
-        if callable(close):
-            await close()
         return ExchangeAccountTestResponse(
             success=True,
             message="Connection is healthy",
@@ -197,15 +208,18 @@ async def test_account(
         # C-3: не прокидываем str(exc) клиенту — может содержать API-ключи
         import logging
         logging.getLogger("app.accounts").exception("Account test failed for %s", account_id)
-        error_type = type(exc).__name__
+        safe_error = _safe_exchange_error(exc)
         return ExchangeAccountTestResponse(
             success=False,
-            message="Connection test failed",
+            message=safe_error,
             balance=None,
             exchange=account.exchange,
             testnet=account.is_testnet,
-            error=f"Ошибка подключения: {error_type}",
+            error=safe_error,
         )
+    finally:
+        if executor is not None:
+            await executor.close()
 
 
 @router.get("/{account_id}/markets")

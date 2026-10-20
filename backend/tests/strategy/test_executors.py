@@ -1,6 +1,9 @@
 """Тесты фабрики исполнителей."""
 
+import asyncio
+
 from app.strategy.executors import CcxtExecutor, PaperExecutor, create_executor
+from app.strategy.executors.ccxt_executor import create_ccxt_exchange
 
 
 def test_create_executor_returns_paper_executor_in_paper_mode() -> None:
@@ -24,3 +27,21 @@ def test_create_executor_rejects_unknown_exchange() -> None:
         pass
     else:
         raise AssertionError("Expected ValueError for unsupported exchange")
+
+
+def test_binance_uses_official_gcp_spot_endpoint() -> None:
+    exchange = create_ccxt_exchange("binance")
+    try:
+        assert exchange.urls["api"]["public"].startswith("https://api-gcp.binance.com/")
+        assert exchange.options["fetchMarkets"]["types"] == ["spot"]
+        assert exchange.options["fetchCurrencies"] is False
+    finally:
+        asyncio.run(exchange.close())
+
+
+def test_bybit_uses_official_alternative_hostname() -> None:
+    exchange = create_ccxt_exchange("bybit")
+    try:
+        assert exchange.hostname == "bytick.com"
+    finally:
+        asyncio.run(exchange.close())

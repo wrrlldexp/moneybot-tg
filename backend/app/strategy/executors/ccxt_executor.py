@@ -22,6 +22,58 @@ T = TypeVar("T")
 
 SUPPORTED_EXCHANGES = ("binance", "bybit")
 
+
+def create_ccxt_exchange(
+    exchange_id: str,
+    api_key: str = "",
+    api_secret: str = "",
+    *,
+    testnet: bool = False,
+) -> ccxt.Exchange:
+    """Create a spot-only CCXT client using reachable official API hosts.
+
+    The production provider cannot route traffic to Binance's default host or
+    Bybit's primary host. Both exchanges publish equivalent official hosts.
+    Limiting Binance market discovery to spot also avoids unnecessary futures
+    and margin requests when the robot is configured for spot trading.
+    """
+    exchange_id = exchange_id.lower()
+    if exchange_id not in SUPPORTED_EXCHANGES:
+        raise ValueError(f"Unsupported exchange: {exchange_id}")
+
+    options: dict[str, Any] = {"defaultType": "spot"}
+    if exchange_id == "binance":
+        options.update({
+            "recvWindow": 5000,
+            "adjustForTimeDifference": True,
+            "fetchMarkets": {"types": ["spot"], "loadAllOptions": False},
+            "fetchCurrencies": False,
+        })
+
+    config: dict[str, Any] = {
+        "apiKey": api_key,
+        "secret": api_secret,
+        "enableRateLimit": True,
+        "timeout": 10000,
+        "options": options,
+    }
+    if exchange_id == "bybit" and not testnet:
+        config["hostname"] = "bytick.com"
+
+    socks_proxy = get_settings().SOCKS_PROXY
+    if socks_proxy:
+        config["socksProxy"] = socks_proxy
+
+    exchange = getattr(ccxt, exchange_id)(config)
+    if exchange_id == "binance" and not testnet:
+        exchange.urls["api"] = {
+            name: url.replace("api.binance.com", "api-gcp.binance.com")
+            for name, url in exchange.urls["api"].items()
+        }
+    if testnet and hasattr(exchange, "set_sandbox_mode"):
+        exchange.set_sandbox_mode(True)
+    return exchange
+
 # Binance error codes that warrant a retry
 BINANCE_RETRY_CODES = {
     -1003,  # TOO_MANY_REQUESTS — rate limit
@@ -151,29 +203,14 @@ class CcxtExecutor(BaseExecutor):
         if exchange_id not in SUPPORTED_EXCHANGES:
             raise ValueError(f"Unsupported exchange: {exchange_id}")
 
-        exchange_class = getattr(ccxt, exchange_id)
         self.exchange_id = exchange_id
         self.symbol = symbol
-
-        options: dict[str, Any] = {"defaultType": "spot"}
-        if exchange_id == "binance":
-            options["recvWindow"] = 5000
-            options["adjustForTimeDifference"] = True
-
-        config: dict[str, Any] = {
-            "apiKey": api_key,
-            "secret": api_secret,
-            "enableRateLimit": True,
-            "timeout": 10000,
-            "options": options,
-        }
-        socks_proxy = get_settings().SOCKS_PROXY
-        if socks_proxy:
-            config["socksProxy"] = socks_proxy
-
-        self.exchange = exchange_class(config)
-        if testnet and hasattr(self.exchange, "set_sandbox_mode"):
-            self.exchange.set_sandbox_mode(True)
+        self.exchange = create_ccxt_exchange(
+            exchange_id,
+            api_key,
+            api_secret,
+            testnet=testnet,
+        )
 
         self.testnet = testnet
         log.info(
