@@ -63,6 +63,11 @@ def create_ccxt_exchange(
         "timeout": 20000 if exchange_id == "bybit" else 10000,
         "options": options,
     }
+    if exchange_id == "binance":
+        # CCXT checks this exchange-level flag before loading currencies.
+        # Binance serves that metadata through SAPI, which is unreachable from
+        # the production provider and is not needed for spot trading/balances.
+        config["fetchCurrencies"] = False
     if exchange_id == "bybit" and not testnet:
         config["hostname"] = "bytick.com"
 
