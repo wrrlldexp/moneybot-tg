@@ -49,12 +49,18 @@ def create_ccxt_exchange(
             "fetchMarkets": {"types": ["spot"], "loadAllOptions": False},
             "fetchCurrencies": False,
         })
+    elif exchange_id == "bybit":
+        options["fetchMarkets"] = {
+            "types": ["spot"],
+            "loadAllOptions": False,
+            "loadExpiredOptions": False,
+        }
 
     config: dict[str, Any] = {
         "apiKey": api_key,
         "secret": api_secret,
         "enableRateLimit": True,
-        "timeout": 10000,
+        "timeout": 20000 if exchange_id == "bybit" else 10000,
         "options": options,
     }
     if exchange_id == "bybit" and not testnet:

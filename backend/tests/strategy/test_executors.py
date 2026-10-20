@@ -43,5 +43,7 @@ def test_bybit_uses_official_alternative_hostname() -> None:
     exchange = create_ccxt_exchange("bybit")
     try:
         assert exchange.hostname == "bytick.com"
+        assert exchange.options["fetchMarkets"]["types"] == ["spot"]
+        assert exchange.timeout == 20_000
     finally:
         asyncio.run(exchange.close())
