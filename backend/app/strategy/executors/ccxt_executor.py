@@ -76,6 +76,8 @@ def create_ccxt_exchange(
         config["socksProxy"] = socks_proxy
 
     exchange = getattr(ccxt, exchange_id)(config)
+    if exchange_id == "binance":
+        exchange.has["fetchCurrencies"] = False
     if exchange_id == "binance" and not testnet:
         exchange.urls["api"] = {
             name: url.replace("api.binance.com", "api-gcp.binance.com")
