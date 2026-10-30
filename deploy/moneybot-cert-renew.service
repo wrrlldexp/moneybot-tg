@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew MoneyBot IP TLS certificate
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/moneybot/scripts/renew-ip-certificate.sh
+
